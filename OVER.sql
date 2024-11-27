@@ -1,0 +1,7 @@
+CASE
+ WHEN SUM(NVL(B.CLOSE_BAL_LCY, 0))
+ OVER(PARTITION BY A.CUST_NO, A.CR_GL) >= 0 THEN
+ 'Deposit'
+ ELSE
+ 'Facility'
+ END
