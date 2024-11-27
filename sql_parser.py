@@ -34,17 +34,20 @@ def find_select_from_where(sql):
     parentheses = False
 
     for match in tokens:
-        keyword = match.group().upper()
+        keyword = match.group().upper().strip()
         position = match.start()
+        position_end = match.end()
 
-        if keyword == "SELECT" or re.sub(r"[\s]+", "", keyword) == "(SELECT":
+        if keyword == "SELECT":  # or re.sub(r"[\s]+", "", keyword) == "(SELECT":
             if current_query:
                 stack.append(current_query)
             query_counter += 1
             current_query = {
                 "name": f"Query_{query_counter}",
                 "SELECT": position,
+                "SELECT_end": position_end,
                 "FROM": None,
+                "FROM_end": None,
                 "WHERE": None,
                 "columns": [],
                 "sources": [],
@@ -54,9 +57,10 @@ def find_select_from_where(sql):
         elif keyword == "FROM":
             if current_query is None or (current_query is not None and current_query["FROM"] is None):   # current_query and current_query["FROM"] is None
                 current_query["FROM"] = position
+                current_query["FROM_end"] = position_end
                 # Извлечение столбцов
                 select_text = sql[current_query["SELECT"]:position].strip()
-                columns = extract_columns(select_text)
+                columns = extract_columns(select_text, current_query["SELECT_end"])
                 current_query["columns"] = columns
 
                 # Извлечение источников
@@ -68,10 +72,24 @@ def find_select_from_where(sql):
             if current_query and current_query["WHERE"] is None:
                 current_query["WHERE"] = position
 
-        # elif re.sub(r"[\s]+", "", keyword) == "(SELECT":
-        #     if current_query:
-        #         stack.append(current_query)
-        #         current_query = None
+        elif re.sub(r"[\s]+", "", keyword) == "(SELECT":
+            # if current_query:
+            #     stack.append(current_query)
+            #     current_query = None
+            if current_query:
+                stack.append(current_query)
+            query_counter += 1
+            current_query = {
+                "name": f"Query_{query_counter}",
+                "SELECT": position,
+                "SELECT_end": position_end,
+                "FROM": None,
+                "FROM_end": None,
+                "WHERE": None,
+                "columns": [],
+                "sources": [],
+                "nested": []
+            }
 
         elif keyword == "(":
             parentheses = True
@@ -115,29 +133,38 @@ def query_cleaning(sql_text):
     sql_text = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
     # Remove single-line comments (-- ...)
     sql_text = re.sub(r"--.*?$", "", sql_text, flags=re.MULTILINE)
+    # Таблиця символів для видалення
+    remove_chars = str.maketrans("", "", "\n\r\t")
+    sql_text = sql_text.translate(remove_chars)
+    # Замінити кілька пробільних символів одним пробілом
+    sql_text = re.sub(r"\s+", " ", sql_text)
     # Remove extra whitespace and return cleaned SQL
     sql_text = sql_text.strip()
 
     return sql_text.replace(" .", ".")
 
 
-def extract_columns(select_text):
+def extract_columns(select_text, select_position_end):
     """
     Extracts column names, aliases, and source aliases from a SELECT clause.
     Handles functions with parentheses and commas.
     """
     select_text = re.sub(r"(?i)(\bSELECT\b|\(\s*SELECT)", "", select_text, count=1).strip()
     columns = []
+    # position_counter = select_position_end
 
     # Split columns by commas, ignoring commas inside parentheses
-    def split_columns(text):
+    def split_columns(text, select_position_end):
         result = []
         current = []
         open_parentheses = 0
+        position_counter = select_position_end
 
         for char in text:
             if char == ',' and open_parentheses == 0:
-                result.append(''.join(current).strip())
+                column = ''.join(current).strip()
+                # result.append((''.join(current).strip(), position_counter))
+                result.append((column, position_counter - len(column)))
                 current = []
             else:
                 if char == '(':
@@ -145,17 +172,21 @@ def extract_columns(select_text):
                 elif char == ')':
                     open_parentheses -= 1
                 current.append(char)
+            position_counter += 1
         # Add the last column
         if current:
-            result.append(''.join(current).strip())
+            column = ''.join(current).strip()
+            result.append((column, position_counter-len(column)))
         return result
 
     # Define column types
-    def define_column_type(column_name, alias, source_alias):
+    def define_column_type(column_name, alias, source_alias, column_position):
         if re.search(r"(\bSELECT\b|\(\s*SELECT)", column_name.strip(), re.IGNORECASE):
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
+                        "data_source_type": "query",
+                        "query_position": column_position,
                         "field_source": source_alias.strip() if source_alias else None,
                         "field_name": column_name.strip() if column_name else None,
                         "field_value": None,
@@ -166,6 +197,7 @@ def extract_columns(select_text):
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "function",
+                        "data_source_type": None,
                         "field_source": source_alias.strip() if source_alias else None,
                         "field_name": None,
                         "field_value": None,
@@ -177,6 +209,7 @@ def extract_columns(select_text):
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "value",
+                        "data_source_type": None,
                         "field_source": source_alias.strip() if source_alias else None,
                         "field_name": None,
                         "field_value": column_name.strip() if column_name else None,
@@ -187,6 +220,7 @@ def extract_columns(select_text):
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
+                        "data_source_type": "table",
                         "field_source": source_alias.strip() if source_alias else None,
                         "field_name": column_name.strip() if column_name else None,
                         "field_value": None,
@@ -195,13 +229,13 @@ def extract_columns(select_text):
                     }
 
     # Split the SELECT text into individual column definitions
-    column_definitions = split_columns(select_text)
+    column_definitions = split_columns(select_text, select_position_end)
 
     # Process each column definition
     for col in column_definitions:
         # Match column expressions with optional alias
         # match_function = re.match(r"(.+?)\s+(?:AS\s+)?(\w+)$", col, re.IGNORECASE)
-        match_function = re.match(r"(.+)\s+AS\s+(\w+)$", col.strip(), flags=re.DOTALL | re.IGNORECASE)
+        match_function = re.match(r"(.+)\s+AS\s+(\w+)$", col[0].strip(), flags=re.DOTALL | re.IGNORECASE)
         if match_function:
             column_expr = match_function.group(1).strip()
             alias = match_function.group(2)
@@ -210,15 +244,15 @@ def extract_columns(select_text):
             match_source_alias = re.match(r"(?:(\w+)\.)?(.+)", column_expr.strip(), re.DOTALL)
             if match_source_alias:
                 source_alias, column_name = match_source_alias.groups()
-                column_object = define_column_type(column_name, alias, source_alias)
+                column_object = define_column_type(column_name, alias, source_alias, col[1])
                 columns.append(column_object)
         else:
             # Simple expression without alias
-            match_simple = re.match(r"(?:(\w+)\.)?(.+)", col)
+            match_simple = re.match(r"(?:(\w+)\.)?(.+)", col[0])
             if match_simple:
                 alias = None
                 source_alias, column_name = match_simple.groups()
-                column_object = define_column_type(column_name, alias, source_alias)
+                column_object = define_column_type(column_name, alias, source_alias, col[1])
                 columns.append(column_object)
 
     return columns
@@ -328,13 +362,15 @@ result = find_select_from_where(sql)
 
 # Преобразование результата в JSON
 if result:
+    # qtj = queries_to_json(sql)
     # json_result = json.dumps(queries_to_json(result), indent=4)
+    # json_result = json.dumps(result, indent=4)
     # print("Nested Queries in JSON Format:")
     # print(json_result)
 
     # Запись JSON в файл
     with open("nested_queries.json", "w", encoding="utf-8") as json_file:
-        json.dump(queries_to_json(result), json_file, indent=4, ensure_ascii=False)
+        json.dump(result, json_file, indent=4, ensure_ascii=False)
     print("\nJSON записан в файл nested_queries.json.")
 else:
     print("\nNo queries found.")
