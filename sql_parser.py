@@ -26,7 +26,9 @@ def find_select_from_where(sql):
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;|\(|\))", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(\bSELECT\b|\bFROM\b|\bWHERE\b|;)", sql, re.IGNORECASE))
-    tokens = list(re.finditer(r"(\bSELECT\b|\bFROM\b|\bWHERE\b|;|\(\s*SELECT|\(|\))", sql, re.IGNORECASE))
+    # tokens = list(re.finditer(r"(\bSELECT\b|\bFROM\b|\bWHERE\b|;|\(\s*SELECT|\(|\))", sql, re.IGNORECASE))
+    # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\(\s*SELECT|\(|\)", sql, re.IGNORECASE))
+    tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\b\(SELECT\b|\(|\)", sql, re.IGNORECASE))
 
     stack = []  # Стек для отслеживания вложенных SELECT
     queries = []  # Список найденных SELECT-FROM-WHERE конструкций
@@ -49,12 +51,13 @@ def find_select_from_where(sql):
                 "FROM": None,
                 "FROM_end": None,
                 "WHERE": None,
+                "WHERE_end": None,
                 "columns": [],
                 "sources": [],
                 "nested": []
             }
 
-        elif keyword == "FROM":
+        elif "FROM" in keyword:   # elif keyword == "FROM":
             if current_query is None or (current_query is not None and current_query["FROM"] is None):   # current_query and current_query["FROM"] is None
                 current_query["FROM"] = position
                 current_query["FROM_end"] = position_end
@@ -65,12 +68,13 @@ def find_select_from_where(sql):
 
                 # Извлечение источников
                 from_text = extract_from(sql, position)
-                sources = parse_sources(from_text)
+                sources = extract_sources(from_text, current_query["FROM_end"])
                 current_query["sources"] = sources
 
         elif keyword == "WHERE":
             if current_query and current_query["WHERE"] is None:
                 current_query["WHERE"] = position
+                current_query["WHERE_end"] = position_end
 
         elif re.sub(r"[\s]+", "", keyword) == "(SELECT":
             # if current_query:
@@ -86,6 +90,7 @@ def find_select_from_where(sql):
                 "FROM": None,
                 "FROM_end": None,
                 "WHERE": None,
+                "WHERE_end": None,
                 "columns": [],
                 "sources": [],
                 "nested": []
@@ -138,10 +143,12 @@ def query_cleaning(sql_text):
     sql_text = sql_text.translate(remove_chars)
     # Замінити кілька пробільних символів одним пробілом
     sql_text = re.sub(r"\s+", " ", sql_text)
+    #Видалити пробіли поряд з символами ( та )
+    sql_text = sql_text.replace(" .", ".").replace("( ", "(").replace(" )", ")")
     # Remove extra whitespace and return cleaned SQL
     sql_text = sql_text.strip()
 
-    return sql_text.replace(" .", ".")
+    return sql_text
 
 
 def extract_columns(select_text, select_position_end):
@@ -164,7 +171,7 @@ def extract_columns(select_text, select_position_end):
             if char == ',' and open_parentheses == 0:
                 column = ''.join(current).strip()
                 # result.append((''.join(current).strip(), position_counter))
-                result.append((column, position_counter - len(column)))
+                result.append((column, position_counter - len(column)+1))
                 current = []
             else:
                 if char == '(':
@@ -176,7 +183,7 @@ def extract_columns(select_text, select_position_end):
         # Add the last column
         if current:
             column = ''.join(current).strip()
-            result.append((column, position_counter-len(column)))
+            result.append((column, position_counter-len(column)+1))
         return result
 
     # Define column types
@@ -235,7 +242,7 @@ def extract_columns(select_text, select_position_end):
     for col in column_definitions:
         # Match column expressions with optional alias
         # match_function = re.match(r"(.+?)\s+(?:AS\s+)?(\w+)$", col, re.IGNORECASE)
-        match_function = re.match(r"(.+)\s+AS\s+(\w+)$", col[0].strip(), flags=re.DOTALL | re.IGNORECASE)
+        match_function = re.match(r"(.+?)\s+(?:AS\s+)?(\w+)$", col[0].strip(), flags=re.DOTALL | re.IGNORECASE)    # (.+)\s+AS\s+(\w+)$
         if match_function:
             column_expr = match_function.group(1).strip()
             alias = match_function.group(2)
@@ -262,59 +269,121 @@ def extract_from(sql, from_position):
     """
     Извлечение текста после FROM.
     """
-    # stack_from = []
+    stack_from = []
     parentheses_from = False
-    # current_from = None
-
+    current_from = None
+    forms = []  # Список найденных WHERE конструкций
 
     from_text = sql[from_position:]
+
+
+    current_from = from_text
     # stop_match = re.search(r"(\bWHERE\b|;|\(|\))", from_text, re.IGNORECASE)
     stop_match = list(re.finditer(r"(\bWHERE\b|;|\(|\))", from_text, re.IGNORECASE))
+    # stop_match = list(re.finditer(r"\((SELECT.+)\)\s+(?:AS\s+)?(\w+)$)|(\bWHERE\b|;", from_text, re.IGNORECASE))
 
     for match in stop_match:
         keyword = match.group().upper()
-        # position = match.start()
+        position = match.start()
 
         if keyword == "(":
-            parentheses_from = True
+            if current_from and not parentheses_from:
+                stack_from.append(current_from)
+                current_from = from_text[position:]
+                # current_from = {"query": "", "nested": []}   ???
 
-        elif keyword == ")" and not parentheses_from or keyword in ("WHERE", ";"):
-            from_text = from_text[:match.start()]
+                # current_query = from_text[:match.start()].strip()
+                # queries.append(current_query)
+                # current_query = ""
+                parentheses_from = True
+            else:
+                current_from = from_text[position:]
+
+        elif keyword == ")":  # and not parentheses_from:  # or keyword in ("WHERE", ";"):
+            # from_text = from_text[:match.start()]    # 1
             # from_text = re.sub(r"(?i)(\bFROM\b)", "", from_text).strip()
-            return from_text.strip()
-            # if current_from and not parentheses_from:
-            #     if stack_from:
-            #         parent_from = stack.pop()
-            #         parent_from["nested"].append(current_from)
-            #         current_from = parent_from
-            #     else:
-            #         # queries.append(current_query)
-            #         current_from = None
+            # return from_text.strip()   #1
+            if current_from and not parentheses_from:
+                if stack_from:
+                    parent_from = stack_from.pop()
+                    # parent_from["nested"].append(current_from)
+                    current_from = parent_from
+                else:
+                    # forms.append(current_from.strip())
+                    current_from = None
+            else:
+                parentheses_from = False
+
+        elif keyword in ("WHERE", ";"):
+            if current_from and not parentheses_from:
+                if stack_from:
+                    parent_from = stack_from.pop()
+                    # parent_from["nested"].append(current_from)
+                    current_from = parent_from
+                else:
+                    # queries.append(current_query)
+                    # current_from = None
+                    from_text = from_text[:position]
+                    return from_text.strip()
+
         else:
             parentheses_from = False
 
-    # if stop_match:
-    #     from_text = from_text[:stop_match.start()]
-    # return from_text.strip()
+    if stop_match:
+        # from_text = from_text[:position]
+        return from_text.strip()
 
 
-def parse_sources(from_text):
+def extract_sources(from_text, from_position_end):
     """
     Извлечение источников данных и их алиасов, включая подзапросы.
     """
     from_text = re.sub(r"(?i)\bFROM\b", "", from_text).strip()
     sources = []
-    for source in from_text.split(","):
-        source = source.strip()
+
+    def split_sources(text, from_position_end):
+        result = []
+        current = []
+        open_parentheses = 0
+        position_counter = from_position_end
+
+        for char in text:
+            if char == ',' and open_parentheses == 0:
+                column = ''.join(current).strip()
+                # result.append((''.join(current).strip(), position_counter))
+                result.append((column, position_counter - len(column)+1))
+                current = []
+            else:
+                if char == '(':
+                    open_parentheses += 1
+                elif char == ')':
+                    open_parentheses -= 1
+                current.append(char)
+            position_counter += 1
+        # Add the last column
+        if current:
+            column = ''.join(current).strip()
+            result.append((column, position_counter-len(column)+1))
+        return result
+
+    source_definitions = split_sources(from_text, from_position_end)
+
+    for source in source_definitions:   # .split(","):
+        # source = source[0].strip()
         # Подзапросы с алиасами
-        match_subquery = re.match(r"\((SELECT.+)\)\s+(?:AS\s+)?(\w+)$", source, re.IGNORECASE)
+        match_subquery = re.match(r"\((SELECT.+)\)\s+(?:AS\s+)?(\w+)$", source[0].strip(), re.IGNORECASE)
         if match_subquery:
             subquery, alias = match_subquery.groups()
-            sources.append({"table": subquery.strip(), "alias": alias})
+            sources.append(
+                {
+                    "table": subquery.strip(),
+                    "alias": alias
+                }
+            )
         else:
             # Простые таблицы с алиасами
             # match = re.match(r"(\w+)(?:\s+AS\s+|\s+)(\w+)$", source, re.IGNORECASE)
-            match = re.match(r"(?:(\w+)\.)?(\w+)(?:\s+(\w+))?", source, re.IGNORECASE)
+            match = re.match(r"(?:(\w+)\.)?(\w+)(?:\s+(\w+))?", source[0].strip(), re.IGNORECASE)
             if match:
                 schema = match.group(1)  # Название схемы
                 table = match.group(2)  # Название таблицы
@@ -329,9 +398,9 @@ def parse_sources(from_text):
                     "union_condition": None,
                     "source_description": None
                 })
-            # else:
-            #     # Если алиас не найден
-            #     sources.append({"table": source, "alias": None})
+            else:
+                # Если алиас не найден
+                sources.append({"table": source, "alias": None})
     return sources
 
 
@@ -340,8 +409,11 @@ def queries_to_json(queries):
         return {
             "name": query["name"],
             "SELECT": query["SELECT"],
+            "SELECT_end": query["SELECT_END"],
             "FROM": query["FROM"],
+            "FROM_end": query["FROM_end"],
             "WHERE": query["WHERE"],
+            "WHERE_end": query["WHERE_end"],
             "columns": query["columns"],
             "sources": query["sources"],
             "nested": [format_query(nested_query) for nested_query in query["nested"]],
