@@ -23,13 +23,23 @@ query_counter = 0  # Счетчик для генерации уникальны
 def find_select_from_where(sql):
     global query_counter
     sql = query_cleaning(sql)
+    tokens = []
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;|\(|\))", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(\bSELECT\b|\bFROM\b|\bWHERE\b|;)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(\bSELECT\b|\bFROM\b|\bWHERE\b|;|\(\s*SELECT|\(|\))", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\(\s*SELECT|\(|\)", sql, re.IGNORECASE))
-    tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\b\(SELECT\b|\(|\)", sql, re.IGNORECASE))
-
+    # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\b\(SELECT\b|\(|\)", sql, re.IGNORECASE))
+    # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\b\(SELECT\b|\bSELECT\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
+    tokens = list(re.finditer(r"^SELECT|\(SELECT|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
+    # tokens_p_select = list(re.finditer(r"\(SELECT", sql, re.IGNORECASE))
+    # tokens_select_w = list(re.finditer(r"\b SELECT \b", sql, re.IGNORECASE))
+    # tokens_select = list(re.finditer(r"^SELECT\b", sql, re.IGNORECASE))
+    # tokens_from_p = list(re.finditer(r"\bFROM \(", sql, re.IGNORECASE))
+    # tokens_from = list(re.finditer(r"\bFROM\b", sql, re.IGNORECASE))
+    # tokens_where = list(re.finditer(r"\bWHERE\b", sql, re.IGNORECASE))
+    # tokens_p = list(re.finditer(r";|\(|\)", sql, re.IGNORECASE))
+    # tokens.append(tokens_p_select)
     stack = []  # Стек для отслеживания вложенных SELECT
     queries = []  # Список найденных SELECT-FROM-WHERE конструкций
     current_query = None
@@ -80,12 +90,13 @@ def find_select_from_where(sql):
             # if current_query:
             #     stack.append(current_query)
             #     current_query = None
+            # parentheses = True
             if current_query:
                 stack.append(current_query)
             query_counter += 1
             current_query = {
                 "name": f"Query_{query_counter}",
-                "SELECT": position,
+                "SELECT": position+1,
                 "SELECT_end": position_end,
                 "FROM": None,
                 "FROM_end": None,
@@ -125,8 +136,14 @@ def find_select_from_where(sql):
 
     # Если остались незакрытые запросы
     if current_query:
-        queries.append(current_query)
-
+        # queries.append(current_query)
+        if stack:
+            parent_query = stack.pop()
+            parent_query["nested"].append(current_query)
+            current_query = parent_query
+        else:
+            queries.append(current_query)
+            current_query = None
     return queries
 
 
@@ -156,7 +173,8 @@ def extract_columns(select_text, select_position_end):
     Extracts column names, aliases, and source aliases from a SELECT clause.
     Handles functions with parentheses and commas.
     """
-    select_text = re.sub(r"(?i)(\bSELECT\b|\(\s*SELECT)", "", select_text, count=1).strip()
+    # select_text = re.sub(r"(?i)(\bSELECT\b|\(\s*SELECT)", "", select_text, count=1).strip()
+    select_text = re.sub(r"(?i)(\bSELECT\b|\(SELECT)", "", select_text, count=1).strip()
     columns = []
     # position_counter = select_position_end
 
@@ -425,7 +443,7 @@ def queries_to_json(queries):
 
 # Основная программа
 try:
-    with open("query2.sql", "r", encoding="utf-8") as file:
+    with open("query3.sql", "r", encoding="utf-8") as file:
         sql = file.read()
 except FileNotFoundError:
     print("File not found!")
