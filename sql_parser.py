@@ -31,7 +31,7 @@ def find_select_from_where(sql):
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\(\s*SELECT|\(|\)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\b\(SELECT\b|\(|\)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\b\(SELECT\b|\bSELECT\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
-    tokens = list(re.finditer(r"^SELECT|\(SELECT|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
+    tokens = list(re.finditer(r"^SELECT|\(SELECT|\b SELECT \b|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
     # tokens_p_select = list(re.finditer(r"\(SELECT", sql, re.IGNORECASE))
     # tokens_select_w = list(re.finditer(r"\b SELECT \b", sql, re.IGNORECASE))
     # tokens_select = list(re.finditer(r"^SELECT\b", sql, re.IGNORECASE))
@@ -156,7 +156,8 @@ def query_cleaning(sql_text):
     # Remove single-line comments (-- ...)
     sql_text = re.sub(r"--.*?$", "", sql_text, flags=re.MULTILINE)
     # Таблиця символів для видалення
-    remove_chars = str.maketrans("", "", "\n\r\t")
+    # remove_chars = str.maketrans("", "", "\n\r\t")
+    remove_chars = str.maketrans("\n\r\t", "   ", "")
     sql_text = sql_text.translate(remove_chars)
     # Замінити кілька пробільних символів одним пробілом
     sql_text = re.sub(r"\s+", " ", sql_text)
