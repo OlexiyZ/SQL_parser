@@ -188,7 +188,9 @@ def extract_columns(select_text, select_position_end):
 
     # Define column types
     def define_column_type(column_name, alias, source_alias, column_position):
-        if re.search(r"(\bSELECT\b|\(\s*SELECT)", column_name.strip(), re.IGNORECASE):
+        match = re.search(r"(\bSELECT\b|\(\s*SELECT)", column_name.strip(), re.IGNORECASE)
+        if match:
+            column_position = column_position + 1 if match.group(1) == "(SELECT" else column_position
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
@@ -363,7 +365,7 @@ def extract_sources(from_text, from_position_end):
         # Add the last column
         if current:
             column = ''.join(current).strip()
-            result.append((column, position_counter-len(column)+1))
+            result.append((column, position_counter-len(column)))
         return result
 
     source_definitions = split_sources(from_text, from_position_end)

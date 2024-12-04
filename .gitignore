@@ -1,1 +1,5 @@
 /nested_queries.json
+/sqlenv/
+/.idea/
+/query2_cleared.txt
+/test.py
