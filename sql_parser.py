@@ -18,11 +18,49 @@ WHERE
 """
 
 query_counter = 0  # Счетчик для генерации уникальных имен запросов
+query_description = ""
 
+
+def query_cleaning(sql_text):
+    """
+    Removes single-line and multi-line comments from SQL text.
+    """
+    # Remove multi-line comments (/* ... */)
+    sql_text = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
+    # Remove single-line comments (-- ...)
+    sql_text = re.sub(r"--.*?$", "", sql_text, flags=re.MULTILINE)
+    # Таблиця символів для видалення
+    # remove_chars = str.maketrans("", "", "\n\r\t")
+    remove_chars = str.maketrans("\n\r\t", "   ", "")
+    sql_text = sql_text.translate(remove_chars)
+    # Замінити кілька пробільних символів одним пробілом
+    sql_text = re.sub(r"\s+", " ", sql_text)
+    #Видалити пробіли поряд з символами ( та )
+    sql_text = sql_text.replace(" .", ".").replace("( ", "(").replace(" )", ")")
+    # Remove extra whitespace and return cleaned SQL
+    sql_text = sql_text.strip()
+
+    return sql_text
+
+
+def extract_query_description(sql_text):
+    global query_description
+    pattern = r"^/\*[\s\S]*?\*/"
+
+    # Check if a multiline comment exists
+    match = re.match(pattern, sql_text.strip())
+
+    if match:
+        query_description = match.group()
+        # Remove the comment from the string
+        sql_text = re.sub(pattern, "", sql_text.strip(), count=1).strip()
+
+    return sql_text
 
 def find_select_from_where(sql):
     global query_counter
-    sql = query_cleaning(sql)
+    sql = extract_query_description(sql)
+    sql = query_cleaning(sql).strip()
     tokens = []
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;|\(|\))", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"(SELECT|FROM|WHERE|;)", sql, re.IGNORECASE))
@@ -31,7 +69,6 @@ def find_select_from_where(sql):
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\(\s*SELECT|\(|\)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\bSELECT\b|\bWHERE\b|;|\b\(SELECT\b|\(|\)", sql, re.IGNORECASE))
     # tokens = list(re.finditer(r"\bFROM \(|\bFROM\b|\b\(SELECT\b|\bSELECT\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
-    tokens = list(re.finditer(r"^SELECT|\(SELECT|\b SELECT \b|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
     # tokens_p_select = list(re.finditer(r"\(SELECT", sql, re.IGNORECASE))
     # tokens_select_w = list(re.finditer(r"\b SELECT \b", sql, re.IGNORECASE))
     # tokens_select = list(re.finditer(r"^SELECT\b", sql, re.IGNORECASE))
@@ -44,6 +81,14 @@ def find_select_from_where(sql):
     queries = []  # Список найденных SELECT-FROM-WHERE конструкций
     current_query = None
     parentheses = False
+
+    queries.append(
+        {
+            "query_description": query_description
+        }
+    )
+
+    tokens = list(re.finditer(r"^SELECT|\(SELECT|\b SELECT \b|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
 
     for match in tokens:
         keyword = match.group().upper().strip()
@@ -70,7 +115,7 @@ def find_select_from_where(sql):
         elif "FROM" in keyword:   # elif keyword == "FROM":
             if current_query is None or (current_query is not None and current_query["FROM"] is None):   # current_query and current_query["FROM"] is None
                 current_query["FROM"] = position
-                current_query["FROM_end"] = position_end
+                current_query["FROM_end"] = position_end+1
                 # Извлечение столбцов
                 select_text = sql[current_query["SELECT"]:position].strip()
                 columns = extract_columns(select_text, current_query["SELECT_end"])
@@ -96,7 +141,7 @@ def find_select_from_where(sql):
             query_counter += 1
             current_query = {
                 "name": f"Query_{query_counter}",
-                "SELECT": position+1,
+                "SELECT": position,  # position+1
                 "SELECT_end": position_end,
                 "FROM": None,
                 "FROM_end": None,
@@ -147,44 +192,35 @@ def find_select_from_where(sql):
     return queries
 
 
-def query_cleaning(sql_text):
-    """
-    Removes single-line and multi-line comments from SQL text.
-    """
-    # Remove multi-line comments (/* ... */)
-    sql_text = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
-    # Remove single-line comments (-- ...)
-    sql_text = re.sub(r"--.*?$", "", sql_text, flags=re.MULTILINE)
-    # Таблиця символів для видалення
-    # remove_chars = str.maketrans("", "", "\n\r\t")
-    remove_chars = str.maketrans("\n\r\t", "   ", "")
-    sql_text = sql_text.translate(remove_chars)
-    # Замінити кілька пробільних символів одним пробілом
-    sql_text = re.sub(r"\s+", " ", sql_text)
-    #Видалити пробіли поряд з символами ( та )
-    sql_text = sql_text.replace(" .", ".").replace("( ", "(").replace(" )", ")")
-    # Remove extra whitespace and return cleaned SQL
-    sql_text = sql_text.strip()
-
-    return sql_text
-
-
 def extract_columns(select_text, select_position_end):
     """
     Extracts column names, aliases, and source aliases from a SELECT clause.
     Handles functions with parentheses and commas.
     """
-    # select_text = re.sub(r"(?i)(\bSELECT\b|\(\s*SELECT)", "", select_text, count=1).strip()
-    select_text = re.sub(r"(?i)(\bSELECT\b|\(SELECT)", "", select_text, count=1).strip()
+    # select_text = re.sub(r"(?i)(\(SELECT)", r"", select_text, count=1).strip()
+    select_text = re.sub(r"(?i)(\bSELECT\b)", "", select_text, count=1)   #.strip()
+
+    position_counter = select_position_end+1
+
+    match_distinct = re.match(r"(?i)(^\()", select_text.strip())
+    if match_distinct:
+        position_counter = select_position_end + len(match_distinct.group())
+        select_text = re.sub(r"(?i)(^\()", "", select_text, count=1)   # .strip()
+
+    match_distinct = re.match(r"(?i)(\bDISTINCT\s)", select_text.strip())
+    if match_distinct:
+        position_counter = select_position_end + len(match_distinct.group())+1
+        select_text = re.sub(r"(?i)(\bDISTINCT\s)", "", select_text, count=1).strip()
+
     columns = []
     # position_counter = select_position_end
 
     # Split columns by commas, ignoring commas inside parentheses
-    def split_columns(text, select_position_end):
+    def split_columns(text, position_counter):
         result = []
         current = []
         open_parentheses = 0
-        position_counter = select_position_end
+        # position_counter = select_position_end
 
         for char in text:
             if char == ',' and open_parentheses == 0:
@@ -209,7 +245,7 @@ def extract_columns(select_text, select_position_end):
     def define_column_type(column_name, alias, source_alias, column_position):
         match = re.search(r"(\bSELECT\b|\(\s*SELECT)", column_name.strip(), re.IGNORECASE)
         if match:
-            column_position = column_position + 1 if match.group(1) == "(SELECT" else column_position
+            column_position = column_position - 1 if match.group(1) == "(SELECT" else column_position
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
@@ -233,7 +269,7 @@ def extract_columns(select_text, select_position_end):
                         "function_field_list": column_name.strip() if column_name else None,
                     }
         elif column_name.strip().replace('.', '').isdigit() or column_name.strip().upper() == 'NULL' \
-                or "'" in column_name.strip() or '"' in column_name.strip():  #  or ('(' not in column_name.strip() and ')' not in column_name.strip())
+                or "'" in column_name.strip(): # or '"' in column_name.strip():  #  or ('(' not in column_name.strip() and ')' not in column_name.strip())
             return {
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "value",
@@ -257,7 +293,7 @@ def extract_columns(select_text, select_position_end):
                     }
 
     # Split the SELECT text into individual column definitions
-    column_definitions = split_columns(select_text, select_position_end)
+    column_definitions = split_columns(select_text, position_counter)
 
     # Process each column definition
     for col in column_definitions:
@@ -294,9 +330,7 @@ def extract_from(sql, from_position):
     parentheses_from = False
     current_from = None
     forms = []  # Список найденных WHERE конструкций
-
     from_text = sql[from_position:]
-
 
     current_from = from_text
     # stop_match = re.search(r"(\bWHERE\b|;|\(|\))", from_text, re.IGNORECASE)
@@ -359,10 +393,10 @@ def extract_sources(from_text, from_position_end):
     """
     Извлечение источников данных и их алиасов, включая подзапросы.
     """
-    from_text = re.sub(r"(?i)\bFROM\b", "", from_text).strip()
+    from_text = re.sub(r"(?i)\bFROM\b", "", from_text, count=1).strip()
     sources = []
 
-    def split_sources(text, from_position_end):
+    def split_coma_sources(text, from_position_end):
         result = []
         current = []
         open_parentheses = 0
@@ -379,6 +413,8 @@ def extract_sources(from_text, from_position_end):
                     open_parentheses += 1
                 elif char == ')':
                     open_parentheses -= 1
+                    if open_parentheses < 0:
+                        break
                 current.append(char)
             position_counter += 1
         # Add the last column
@@ -387,41 +423,88 @@ def extract_sources(from_text, from_position_end):
             result.append((column, position_counter-len(column)))
         return result
 
-    source_definitions = split_sources(from_text, from_position_end)
+    def split_join_sources(source_list):
+        for source in source_list:
+            join_match = re.search(
+                (
+                    r"\bUNION ALL\b|\bINNER JOIN\b|\bLEFT JOIN\b|\bLEFT OUTER JOIN\b|\bRIGHT JOIN\b|"
+                    r"\bRIGHT OUTER JOIN\b|\bFULL JOIN\b|\bFULL OUTER JOIN\b|r\bCROSS JOIN\b|\bSELF JOIN\b|"
+                    r"\bNATURAL JOIN\b"
+                ),
+                source[0],
+                re.IGNORECASE
+            )
+            if join_match:
+                # union_type = ""
+                # source_position = source[1] + len(source[2])+1 if len(source) > 2 else source[1]
+                union_type = source[2] if len(source) > 2 and source[2] else "main"
+                current_source = (source[0][:join_match.start()], source[1], union_type)
+                next_source = (source[0][join_match.end()+1:], source[1]+join_match.end()+1, join_match.group())
+                source_list.insert(source_list.index(source) + 1, next_source)
+                source_list[source_list.index(source)] = current_source
+        return source_list
+
+    source_definitions = split_coma_sources(from_text, from_position_end)
+    source_definitions = split_join_sources(source_definitions)
 
     for source in source_definitions:   # .split(","):
+        union_type = source[2] if len(source) > 2 and source[2] else "coma"
         # source = source[0].strip()
-        # Подзапросы с алиасами
-        match_subquery = re.match(r"\((SELECT.+)\)\s+(?:AS\s+)?(\w+)$", source[0].strip(), re.IGNORECASE)
+        # Датасорсы с алиасами и кондишинами
+        match_condition = re.match(r"^(.*?)\s+(\w+)\s+ON\s+(.*)$", source[0].strip(), re.IGNORECASE)
+        if match_condition:
+            datasource, alias, condition = match_condition.groups()
+        else:
+            # Датасорсы с алиасами без кондишинов
+            match_alias = re.match(r"^(.*?)\s+(\w+)$", source[0].strip(), re.IGNORECASE)
+            if match_alias:
+                datasource, alias = match_alias.groups()
+                condition = None
+            else:
+                # Простые таблицы
+                datasource = source[0].strip()
+                alias = None
+                condition = None
+        # Подзапросы
+        # match_subquery = re.match(r"\((SELECT.+)\)\s+(?:AS\s+)?(\w+)$", datasource.strip(), re.IGNORECASE)
+        match_subquery = re.match(r"\(\s*SELECT\b", datasource.strip(), re.IGNORECASE)
         if match_subquery:
-            subquery, alias = match_subquery.groups()
+            # source_position = source[1] + len(union_type)+1 if union_type else source[1]
             sources.append(
                 {
-                    "table": subquery.strip(),
-                    "alias": alias
+                    "source_alias": alias.strip() if alias else None,
+                    "source_type": "query",
+                    # "source_name": datasource.strip() if datasource else None,
+                    "source_name": source[0],
+                    "source_position": source[1],
+                    "source_scheme": None,
+                    "source_system": None,
+                    "union_type": union_type.strip() if union_type else None,
+                    "union_condition": condition.strip() if condition else None,
+                    "source_description": None
                 }
             )
         else:
-            # Простые таблицы с алиасами
-            # match = re.match(r"(\w+)(?:\s+AS\s+|\s+)(\w+)$", source, re.IGNORECASE)
-            match = re.match(r"(?:(\w+)\.)?(\w+)(?:\s+(\w+))?", source[0].strip(), re.IGNORECASE)
+            # Простые таблицы
+            match = re.match(r"(?:(\w+)\.)?(\w+)(?:\s+(\w+))?", datasource.strip(), re.IGNORECASE)
             if match:
                 schema = match.group(1)  # Название схемы
                 table = match.group(2)  # Название таблицы
-                alias = match.group(3)   # Алиас
+                # alias = match.group(3)   # Алиас
                 sources.append({
-                    "field_alias": alias.strip() if alias else None,
+                    "source_alias": alias.strip() if alias else None,
                     "source_type": "table",
                     "source_name": table.strip() if table else None,
+                    # "source_position": source[1],
                     "source_scheme": schema.strip() if schema else None,
                     "source_system": None,
-                    "union_type": None,
+                    "union_type": union_type if union_type else None,
                     "union_condition": None,
                     "source_description": None
                 })
-            else:
-                # Если алиас не найден
-                sources.append({"table": source, "alias": None})
+            # else:
+            #     # Если алиас не найден
+            #     sources.append({"table": source, "alias": None})
     return sources
 
 
@@ -444,7 +527,7 @@ def queries_to_json(queries):
 
 # Основная программа
 try:
-    with open("query3.sql", "r", encoding="utf-8") as file:
+    with open("query4.sql", "r", encoding="utf-8") as file:
         sql = file.read()
 except FileNotFoundError:
     print("File not found!")
