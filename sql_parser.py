@@ -82,11 +82,11 @@ def find_select_from_where(sql):
     current_query = None
     parentheses = False
 
-    queries.append(
-        {
-            "query_description": query_description
-        }
-    )
+    # queries.append(
+    #     {
+    #         "query_description": query_description
+    #     }
+    # )
 
     tokens = list(re.finditer(r"^SELECT|\(SELECT|\b SELECT \b|\bFROM\b|\bWHERE\b|;|\(|\)", sql, re.IGNORECASE))
 
@@ -100,13 +100,15 @@ def find_select_from_where(sql):
                 stack.append(current_query)
             query_counter += 1
             current_query = {
-                "name": f"Query_{query_counter}",
+                "query_name": f"Q_{query_counter}",
                 "SELECT": position,
                 "SELECT_end": position_end,
                 "FROM": None,
                 "FROM_end": None,
                 "WHERE": None,
                 "WHERE_end": None,
+                "query_fields": f"FL_{query_counter}",
+                "query_source": f"DS_{query_counter}",
                 "columns": [],
                 "sources": [],
                 "nested": []
@@ -118,12 +120,14 @@ def find_select_from_where(sql):
                 current_query["FROM_end"] = position_end+1
                 # Извлечение столбцов
                 select_text = sql[current_query["SELECT"]:position].strip()
-                columns = extract_columns(select_text, current_query["SELECT_end"])
+                field_list_name = current_query["query_fields"]
+                source_list_name = current_query["query_source"]
+                columns = extract_columns(select_text, current_query["SELECT_end"], field_list_name, source_list_name)
                 current_query["columns"] = columns
 
                 # Извлечение источников
                 from_text = extract_from(sql, position)
-                sources = extract_sources(from_text, current_query["FROM_end"])
+                sources = extract_sources(from_text, current_query["FROM_end"], source_list_name)
                 current_query["sources"] = sources
 
         elif keyword == "WHERE":
@@ -140,13 +144,15 @@ def find_select_from_where(sql):
                 stack.append(current_query)
             query_counter += 1
             current_query = {
-                "name": f"Query_{query_counter}",
+                "query_name": f"Q_{query_counter}",
                 "SELECT": position,  # position+1
                 "SELECT_end": position_end,
                 "FROM": None,
                 "FROM_end": None,
                 "WHERE": None,
                 "WHERE_end": None,
+                "query_fields": f"FL_{query_counter}",
+                "query_source": f"DS_{query_counter}",
                 "columns": [],
                 "sources": [],
                 "nested": []
@@ -189,10 +195,13 @@ def find_select_from_where(sql):
         else:
             queries.append(current_query)
             current_query = None
-    return queries
+    return {
+            "description": query_description,
+            "queries": queries
+    }
 
 
-def extract_columns(select_text, select_position_end):
+def extract_columns(select_text, select_position_end, field_list_name, source_list_name):
     """
     Extracts column names, aliases, and source aliases from a SELECT clause.
     Handles functions with parentheses and commas.
@@ -241,12 +250,51 @@ def extract_columns(select_text, select_position_end):
             result.append((column, position_counter-len(column)+1))
         return result
 
+    def define_function_fields(text):
+        words_to_remove = ["NVL", "NVL2", "MAX", "CASE", "WHEN", "THEN", "END", "IN", "ELSE", "SELECT", "FROM",\
+                           "WHERE", "BETWEEN", "AND", "OR"]
+        symbols_to_remove = ["(", ")"]
+
+        for word in words_to_remove:
+            text = re.sub(fr"\b{word}\b", ",", text, flags=re.IGNORECASE)
+            # text = text.replace(word, "")
+
+        for symbol in symbols_to_remove:
+            text = text.replace(symbol, ",").strip()
+
+        text = re.sub(r"^.*?=", "", text).strip()
+        text = re.sub(r"\+", ",", text).strip()
+        text = re.sub(r"=", "", text).strip()
+        # text = re.sub(r"\d", "", text).strip()
+        text = re.sub(r" ", "", text).strip()
+        text = re.sub(r",,", ",", text).strip()
+        text = re.sub(r",,", ",", text).strip()
+        text = text.strip(",")
+
+        return text
+
     # Define column types
     def define_column_type(column_name, alias, source_alias, column_position):
-        match = re.search(r"(\bSELECT\b|\(\s*SELECT)", column_name.strip(), re.IGNORECASE)
-        if match:
+        match = re.search(r"(\bSELECT\b|\(\s*SELECT|\bCASE\b)", column_name.strip(), re.IGNORECASE)
+        if match and match.group().upper() == "CASE":
+            field_list = define_function_fields(column_name.strip() if column_name else None)
+            return {
+                "field_list": field_list_name,
+                "source_list_name": source_list_name,
+                "field_alias": alias.strip() if alias else None,
+                "field_source_type": "function",
+                "data_source_type": None,
+                "field_source": source_alias.strip() if source_alias else None,
+                "field_name": None,
+                "field_value": None,
+                "field_function": column_name.strip() if column_name else None,
+                "function_field_list": field_list,
+            }
+        elif match and "SELECT" in match.group().upper():
             column_position = column_position - 1 if match.group(1) == "(SELECT" else column_position
             return {
+                        "field_list": field_list_name,
+                        "source_list_name": source_list_name,
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
                         "data_source_type": "query",
@@ -258,7 +306,10 @@ def extract_columns(select_text, select_position_end):
                         "function_field_list": None
                     }
         elif '(' in column_name.strip() and ')' in column_name.strip():
+            field_list = define_function_fields(column_name.strip() if column_name else None)
             return {
+                        "field_list": field_list_name,
+                        "source_list_name": source_list_name,
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "function",
                         "data_source_type": None,
@@ -266,11 +317,13 @@ def extract_columns(select_text, select_position_end):
                         "field_name": None,
                         "field_value": None,
                         "field_function": column_name.strip() if column_name else None,
-                        "function_field_list": column_name.strip() if column_name else None,
+                        "function_field_list": field_list,
                     }
         elif column_name.strip().replace('.', '').isdigit() or column_name.strip().upper() == 'NULL' \
                 or "'" in column_name.strip(): # or '"' in column_name.strip():  #  or ('(' not in column_name.strip() and ')' not in column_name.strip())
             return {
+                        "field_list": field_list_name,
+                        "source_list_name": source_list_name,
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "value",
                         "data_source_type": None,
@@ -282,6 +335,8 @@ def extract_columns(select_text, select_position_end):
                     }
         else:
             return {
+                        "field_list": field_list_name,
+                        "source_list_name": source_list_name,
                         "field_alias": alias.strip() if alias else None,
                         "field_source_type": "data_source",
                         "data_source_type": "table",
@@ -389,7 +444,7 @@ def extract_from(sql, from_position):
         return from_text.strip()
 
 
-def extract_sources(from_text, from_position_end):
+def extract_sources(from_text, from_position_end, source_list_name):
     """
     Извлечение источников данных и их алиасов, включая подзапросы.
     """
@@ -472,6 +527,7 @@ def extract_sources(from_text, from_position_end):
             # source_position = source[1] + len(union_type)+1 if union_type else source[1]
             sources.append(
                 {
+                    "source_union_list_name": source_list_name,
                     "source_alias": alias.strip() if alias else None,
                     "source_type": "query",
                     # "source_name": datasource.strip() if datasource else None,
@@ -492,6 +548,7 @@ def extract_sources(from_text, from_position_end):
                 table = match.group(2)  # Название таблицы
                 # alias = match.group(3)   # Алиас
                 sources.append({
+                    "source_union_list_name": source_list_name,
                     "source_alias": alias.strip() if alias else None,
                     "source_type": "table",
                     "source_name": table.strip() if table else None,
@@ -526,27 +583,28 @@ def queries_to_json(queries):
 
 
 # Основная программа
-try:
-    with open("query4.sql", "r", encoding="utf-8") as file:
-        sql = file.read()
-except FileNotFoundError:
-    print("File not found!")
-except IOError:
-    print("Error reading the file!")
+if __name__ == "__main__":
+    try:
+        with open("query4.sql", "r", encoding="utf-8") as file:
+            sql = file.read()
+    except FileNotFoundError:
+        print("File not found!")
+    except IOError:
+        print("Error reading the file!")
 
-result = find_select_from_where(sql)
+    result = find_select_from_where(sql)
 
-# Преобразование результата в JSON
-if result:
-    # qtj = queries_to_json(sql)
-    # json_result = json.dumps(queries_to_json(result), indent=4)
-    # json_result = json.dumps(result, indent=4)
-    # print("Nested Queries in JSON Format:")
-    # print(json_result)
+    # Преобразование результата в JSON
+    if result:
+        # qtj = queries_to_json(sql)
+        # json_result = json.dumps(queries_to_json(result), indent=4)
+        # json_result = json.dumps(result, indent=4)
+        # print("Nested Queries in JSON Format:")
+        # print(json_result)
 
-    # Запись JSON в файл
-    with open("nested_queries.json", "w", encoding="utf-8") as json_file:
-        json.dump(result, json_file, indent=4, ensure_ascii=False)
-    print("\nJSON записан в файл nested_queries.json.")
-else:
-    print("\nNo queries found.")
+        # Запись JSON в файл
+        with open("nested_queries.json", "w", encoding="utf-8") as json_file:
+            json.dump(result, json_file, indent=4, ensure_ascii=False)
+        print("\nJSON записан в файл nested_queries.json.")
+    else:
+        print("\nNo queries found.")
